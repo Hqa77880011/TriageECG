@@ -1,0 +1,1 @@
+{"seed":13,"width":64,"classes":5,"epochs":100,"batch_size":32,"learning_rate":0.001,"corruption_scale":1,"lead_dropout":0.2,"mild_scale":0.01,"technical_weight":0.5,"pair_weight":0.1,"coverage":0.8,"coverage_tolerance":0.02,"minimum_retention":0.6,"threshold_points":8,"reacquisition_cost":0.1,"review_cost":0.2,"variant":"full"}
