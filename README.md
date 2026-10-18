@@ -42,7 +42,11 @@ python -m qualitynovelty plot --config config.json --output runs/default
 Supported controls: `no-quality`, `no-retention`, `no-consistency`, `collapsed-actions`. Keep the input groups, seed and budget fixed.
 
 ```bash
-python -m qualitynovelty train --config config.json --output runs/no_quality --variant no-quality
+python -m qualitynovelty prepare --input data/ecg.npz --config config.json --output runs/no_quality --variant no-quality
+python -m qualitynovelty train --config config.json --output runs/no_quality
+python -m qualitynovelty calibrate --config config.json --output runs/no_quality
+python -m qualitynovelty run --config config.json --output runs/no_quality
+python -m qualitynovelty evaluate --config config.json --output runs/no_quality
 ```
 
 ## Outputs
@@ -51,4 +55,4 @@ python -m qualitynovelty train --config config.json --output runs/no_quality --v
 
 Keep `config.json` with the run; it contains model/data settings and the seed where the CLI does not expose one. Use separate output directories for different seeds/conditions.
 
-Source inspection: Python 3.13.5, numpy 2.1.3, scipy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, matplotlib 3.10.0, torch 2.7.1+cu118 (installed versions inspected). Checks covered Python syntax, configuration parsing and CLI arguments. No training, full evaluation or CI was run in this update.
+Source inspection: Python 3.13.5, numpy 2.1.3, scipy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, matplotlib 3.10.0, torch 2.7.1+cu118 (installed versions inspected). Checks covered Python syntax, configuration parsing and CLI arguments. No training or full evaluation was run. The GitHub Actions workflow checks source syntax and package installation plus undefined-name/import linting.
