@@ -2,48 +2,53 @@
 
 Implementation of **Separating signal corruption from semantic novelty for class-preserving ECG triage.**
 
-## Install
+## Installation
 
-Use Python 3.11 in an isolated environment. Run from the repository root:
+Use Python 3.10+. Create and activate a virtual environment before installing:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -e .
 ```
 
-## Data
+In PowerShell, replace the activation line with `.venv\Scripts\Activate.ps1`.
+
+## Data and preprocessing
 
 Use [PTB-XL](https://physionet.org/content/ptb-xl/1.0.3/) and the paper's arrhythmia sources after a declared common rhythm mapping. NPZ fields are `x: (N,leads,time)`, `y` with known classes `0..K-1` and semantic unknown `-1`, `patient`, `split`, `defect` and `readable`. Roles are `train,dev,cal,test`; entire patients stay in one role. Training contains known classes only. Development semantic outliers are source-held-out classes, never final-target unknowns. Technical-defect and readable labels describe separate annotation concepts.
 
-## Workflow
-
 ```bash
-python -m qualitynovelty prepare --input data/ecg.npz
-python -m qualitynovelty train
-python -m qualitynovelty calibrate
-python -m qualitynovelty run
-python -m qualitynovelty evaluate
-python -m qualitynovelty plot
+python -m qualitynovelty prepare --input data/ecg.npz --config config.json --output runs/default
 ```
 
-Main commands accept `--config config.json` and `--output runs/default`. Each output directory records `settings.json`. Keep independent seeds, datasets and conditions in separate directories.
+## Training and inference
 
-## Configuration
+```bash
+python -m qualitynovelty train --config config.json --output runs/default
+python -m qualitynovelty calibrate --config config.json --output runs/default
+python -m qualitynovelty run --config config.json --output runs/default
+```
 
-`technical_weight,pair_weight` combine technical and mild-pair losses. `mild_scale` defines label-preserving perturbations; `corruption_scale,lead_dropout` train technical discrimination. `coverage,coverage_tolerance,minimum_retention` define calibration feasibility. `reacquisition_cost,review_cost` price routing actions. `threshold_points` defines the finite policy family. Additional optimizer, batch-size and model-width defaults are in `config.json`.
+## Evaluation
+
+```bash
+python -m qualitynovelty evaluate --config config.json --output runs/default
+python -m qualitynovelty plot --config config.json --output runs/default
+```
+
+## Ablations
+
+Supported controls: `no-quality`, `no-retention`, `no-consistency`, `collapsed-actions`. Keep the input groups, seed and budget fixed.
+
+```bash
+python -m qualitynovelty train --config config.json --output runs/no_quality --variant no-quality
+```
 
 ## Outputs
 
-`model.pt` contains the shared representation/quality model. `novelty.npz` stores source class statistics and the quality-conditioned logistic score. `policy.json` records the selected feasible threshold triple or infeasibility. `predictions.npz` retains class, defect, novelty and action outputs. `metrics.csv` contains clean Macro-F1, semantic AUROC, accepted error over every classified record, readable-known coverage, minimum class retention, routing rates and wrong-action rate; `action_confusion.csv` preserves action denominators.
+`runs/default/` holds `settings.json`, `data.npz`, normalization/model state, `novelty.npz`, `policy.json`, `predictions.npz`, `metrics.csv`, `action_confusion.csv` and `routing.png`.
 
-## Method and comparisons
+Keep `config.json` with the run; it contains model/data settings and the seed where the CLI does not expose one. Use separate output directories for different seeds/conditions.
 
-Classification, technical evidence and novelty use separate heads/inputs. Mild consistency never treats severe corruption as label preserving. Calibration enumerates a transparent three-action threshold family at the requested coverage and class-retention limits. No feasible policy produces an explicit infeasible operating point, not relaxed constraints. Acquisition/review target actions for the controlled analysis follow supplied technical/semantic labels.
-
-Controls: `full`, `no-quality`, `no-retention`, `no-consistency`, `collapsed-actions`. Choose `--variant` and use a separate training/output directory.
-
-```bash
-python -m qualitynovelty.compare --inputs "runs/*/metrics.csv" --reference full --metrics clean_macro_f1 accepted_error minimum_class_retention --unit seed
-```
-
-Comparison averages rows within independent units before bootstrap intervals and paired Wilcoxon/Holm inference. For participant/client analyses choose those independent unit columns instead of counting recordings as replicates.
-
+Source inspection: Python 3.13.5, numpy 2.1.3, scipy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, matplotlib 3.10.0, torch 2.7.1+cu118 (installed versions inspected). Checks covered Python syntax, configuration parsing and CLI arguments. No training, full evaluation or CI was run in this update.
