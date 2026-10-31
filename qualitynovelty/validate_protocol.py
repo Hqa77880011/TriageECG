@@ -98,6 +98,7 @@ def main():
     stress(dict(c,variant='full'),out,out/'stress',[24,0])
     report=pd.read_csv(out/'stress/snr_metrics.csv')
     assert np.allclose(report.snr_db,report.measured_mean_snr_db,atol=1e-4)
+    assert report.clean_macro_f1.isna().all()
     assert (out/'policy.json').read_bytes()==(out/'stress/snr_24/policy.json').read_bytes()
     # No development semantic outlier is a supported, explicit source-only setting.
     no_ood=out/'no-development-outliers'; no_ood.mkdir(exist_ok=True)

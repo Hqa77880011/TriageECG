@@ -222,7 +222,8 @@ def evaluate(c, out):
     eligible=policy.get('retention_classes',list(range(c['classes'])))
     retention = [(actions[known & (y == k)] == 0).mean() for k in eligible if (known & (y == k)).any()]
     target_action = np.where(d['technical'] > 0, 1, np.where(y < 0, 2, 0))
-    result = dict(method=c['variant'], clean_macro_f1=f1_score(y[known & (d['technical'] == 0)], p[known & (d['technical'] == 0)].argmax(1), average='macro', zero_division=0),
+    clean=known & (d['technical']==0)
+    result = dict(method=c['variant'], clean_macro_f1=f1_score(y[clean], p[clean].argmax(1), average='macro', zero_division=0) if clean.any() else np.nan,
                   semantic_auroc=roc_auc_score(y[readable] < 0, d['novelty'][readable]) if len(np.unique(y[readable]<0))==2 else np.nan,
                   accepted_error=float((~correct[accepted & (y >= 0)]).mean()) if (accepted & (y >= 0)).any() else np.nan,
                   accepted_unknown_rate=float(accepted[y < 0].mean()) if (y < 0).any() else np.nan,
