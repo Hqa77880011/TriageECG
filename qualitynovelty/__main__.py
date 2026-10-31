@@ -11,6 +11,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 from torch.nn import functional as F
+from .perturb import corrupt
 
 
 class Residual(nn.Module):
@@ -43,20 +44,38 @@ def prepare(c, out, source):
     required = {'x', 'y', 'patient', 'split', 'defect', 'readable'}
     if not required <= set(d):
         raise ValueError('Requires x,y,patient,split,defect,readable; unknown y=-1')
+    if d['x'].ndim!=3 or any(len(d[key])!=len(d['x']) for key in required-{'x'}):
+        raise ValueError('ECG records and their labels/identities must have matching leading dimensions')
+    if not np.isin(d['defect'],[0,1]).all() or not np.isin(d['readable'],[0,1]).all():
+        raise ValueError('Defect and readability need separate explicit binary annotations')
     for patient in np.unique(d['patient']):
         if len(np.unique(d['split'][d['patient'] == patient])) != 1:
             raise ValueError('A patient crosses train/dev/cal/test roles')
     train = d['split'] == 'train'
+    if 'canonical_record' in d and len(np.unique(d['canonical_record']))!=len(d['y']):
+        raise ValueError('Redistributed copies must be deduplicated by canonical_record before splitting')
+    if 'class_names' in d and len(d['class_names'])!=c['classes']:
+        raise ValueError('Configured class count differs from the declared rhythm vocabulary')
     mean = np.nanmean(d['x'][train], axis=(0, 2), keepdims=True)
     scale = np.nanstd(d['x'][train], axis=(0, 2), keepdims=True).clip(1e-6)
     d['x'] = np.nan_to_num((d['x'] - mean) / scale).astype(np.float32)
     if (d['y'][train] < 0).any():
         raise ValueError('Recognition training must contain known classes only')
+    if set(d['y'][train])!=set(range(c['classes'])):
+        raise ValueError('Every configured known class must have source-training support')
+    if 'semantic_id' in d:
+        dev_unknown=set(d['semantic_id'][(d['y']<0)&np.isin(d['split'],['dev','cal'])])
+        test_unknown=set(d['semantic_id'][(d['y']<0)&(d['split']=='test')])
+        if dev_unknown & test_unknown:
+            raise ValueError('Development unknown rhythms overlap final-test unknown rhythms')
     np.savez_compressed(out / 'data.npz', **d)
     np.savez(out / 'normalization.npz', mean=mean, scale=scale)
 
 
 def train(c, out):
+    from .baselines import BASELINES, train as train_baseline
+    if c['variant'] in BASELINES:
+        return train_baseline(c,out)
     torch.manual_seed(c['seed'])
     d = np.load(out / 'data.npz')
     x, y = torch.tensor(d['x']), torch.tensor(d['y'], dtype=torch.long)
@@ -67,9 +86,7 @@ def train(c, out):
         for selected in torch.tensor(ids)[torch.randperm(len(ids))].split(c['batch_size']):
             current = x[selected]
             logits, z, quality = model(current)
-            damaged = current + torch.randn_like(current) * c['corruption_scale']
-            dropped = torch.rand(len(current), current.shape[1], 1) < c['lead_dropout']
-            damaged = damaged.masked_fill(dropped, 0)
+            damaged = corrupt(current,c.get('training_snr_db',12.),c['lead_dropout'])
             _, _, corrupt_quality = model(damaged)
             loss = F.cross_entropy(logits, y[selected])
             loss += c['technical_weight'] * (F.binary_cross_entropy_with_logits(quality, torch.tensor(d['defect'][selected], dtype=torch.float32)) +
@@ -95,7 +112,7 @@ def predict(model, x, c):
 
 def novelty_features(z, defect, energy, center, scale, c):
     distances = np.sqrt(((z[:, None] - center[None]) ** 2 / scale[None]).sum(-1))
-    parts = [energy[:, None], distances]
+    parts = [energy[:, None], distances, distances.min(1)[:,None]]
     if c['variant'] != 'no-quality':
         parts.append(defect[:, None])
     return np.concatenate(parts, 1)
@@ -111,6 +128,9 @@ def route(p, q, u, thresholds, c):
 
 
 def calibrate(c, out):
+    from .baselines import BASELINES, calibrate as calibrate_baseline
+    if c['variant'] in BASELINES:
+        return calibrate_baseline(c,out)
     d = np.load(out / 'data.npz')
     model = Triage(d['x'].shape[1], c)
     model.load_state_dict(torch.load(out / 'model.pt', weights_only=True, map_location='cpu'))
@@ -118,17 +138,36 @@ def calibrate(c, out):
     _, z, _, _ = predict(model, d['x'][training], c)
     centers = np.stack([z[d['y'][training] == k].mean(0) for k in range(c['classes'])])
     scales = np.stack([z[d['y'][training] == k].var(0).clip(1e-5) for k in range(c['classes'])])
-    development = d['split'] == 'dev'
+    development = (d['split'] == 'dev') & (d['readable']==1)
     p, z, q, energy = predict(model, d['x'][development], c)
     feature = novelty_features(z, q, energy, centers, scales, c)
     standardizer = StandardScaler().fit(feature)
-    learner = LogisticRegression(max_iter=2000).fit(standardizer.transform(feature), d['y'][development] < 0)
+    semantic=d['y'][development]<0
+    if not (~semantic).any(): raise ValueError('Source development requires readable known records')
+    if semantic.any() and (~semantic).any():
+        learner = LogisticRegression(max_iter=2000).fit(standardizer.transform(feature), semantic)
+        coefficient,intercept=learner.coef_[0],learner.intercept_[0]
+    else:
+        coefficient=np.zeros(feature.shape[1]); coefficient[0]=coefficient[c['classes']+1]=.5
+        intercept=0.
     calibration = d['split'] == 'cal'
     p, z, q, energy = predict(model, d['x'][calibration], c)
     feature = novelty_features(z, q, energy, centers, scales, c)
-    u = learner.predict_proba(standardizer.transform(feature))[:, 1]
+    u = 1/(1+np.exp(-np.clip(standardizer.transform(feature)@coefficient+intercept,-700,700)))
     labels = d['y'][calibration]
-    readable_known = (labels >= 0) & d['readable'][calibration].astype(bool)
+    policy=select_policy(p,q,u,labels,d['readable'][calibration],c)
+    (out / 'policy.json').write_text(json.dumps(policy))
+    np.savez(out / 'novelty.npz', centers=centers, scales=scales, mean=standardizer.mean_, scale=standardizer.scale_,
+             coefficient=coefficient, intercept=intercept)
+
+
+def select_policy(p,q,u,labels,readable,c):
+    readable_known = (labels >= 0) & (readable==1)
+    eligible=[k for k in range(c['classes']) if np.sum(readable_known & (labels==k))>=c.get('retention_min_support',5)]
+    from .baselines import BASELINES
+    enforce=c['variant'] not in ['no-retention',*BASELINES]
+    if not readable_known.any() or (enforce and not eligible):
+        return dict(feasible=False,thresholds=None,retention_classes=eligible)
     best, selected = np.inf, None
     grid = np.linspace(0, 1, c['threshold_points'])
     for confidence in np.quantile(p.max(1), grid):
@@ -139,20 +178,22 @@ def calibrate(c, out):
                 coverage = (action[readable_known] == 0).mean()
                 if abs(coverage - c['coverage']) > c['coverage_tolerance']:
                     continue
-                retention = [(action[readable_known & (labels == k)] == 0).mean() for k in range(c['classes']) if (readable_known & (labels == k)).any()]
-                if c['variant'] != 'no-retention' and min(retention) < c['minimum_retention']:
+                retention = [(action[readable_known & (labels == k)] == 0).mean() for k in eligible]
+                if enforce and min(retention) < c['minimum_retention']:
                     continue
                 accepted = (action == 0) & (labels >= 0)
                 error = (p.argmax(1)[accepted] != labels[accepted]).mean() if accepted.any() else 1.
                 objective = error + c['reacquisition_cost'] * (action == 1).mean() + c['review_cost'] * (action == 2).mean()
                 if objective < best:
                     best, selected = objective, thresholds
-    (out / 'policy.json').write_text(json.dumps(dict(feasible=selected is not None, thresholds=selected)))
-    np.savez(out / 'novelty.npz', centers=centers, scales=scales, mean=standardizer.mean_, scale=standardizer.scale_,
-             coefficient=learner.coef_[0], intercept=learner.intercept_[0])
+    return dict(feasible=selected is not None,thresholds=selected,retention_classes=eligible,
+                coverage_target=c['coverage'],minimum_calibration_support=c.get('retention_min_support',5))
 
 
 def run(c, out):
+    from .baselines import BASELINES, run as run_baseline
+    if c['variant'] in BASELINES:
+        return run_baseline(c,out)
     policy = json.loads((out / 'policy.json').read_text(encoding='utf-8'))
     if not policy['feasible']:
         raise ValueError('No calibration policy satisfies coverage and class-retention constraints')
@@ -167,27 +208,42 @@ def run(c, out):
     u = 1 / (1 + np.exp(-np.clip(logit, -700, 700)))
     actions = route(p, q, u, policy['thresholds'], c)
     np.savez_compressed(out / 'predictions.npz', probability=p, defect=q, novelty=u, action=actions,
-                        y=d['y'][test], readable=d['readable'][test], technical=d['defect'][test])
+                        y=d['y'][test], readable=d['readable'][test], technical=d['defect'][test],patient=d['patient'][test])
 
 
 def evaluate(c, out):
     d = np.load(out / 'predictions.npz')
     p, y, actions = d['probability'], d['y'], d['action']
-    readable = d['readable'].astype(bool)
+    readable = d['readable']==1
     known = (y >= 0) & readable
     accepted = actions == 0
     correct = p.argmax(1) == y
-    retention = [(actions[known & (y == k)] == 0).mean() for k in range(c['classes']) if (known & (y == k)).any()]
+    policy=json.loads((out/'policy.json').read_text()) if (out/'policy.json').exists() else {}
+    eligible=policy.get('retention_classes',list(range(c['classes'])))
+    retention = [(actions[known & (y == k)] == 0).mean() for k in eligible if (known & (y == k)).any()]
     target_action = np.where(d['technical'] > 0, 1, np.where(y < 0, 2, 0))
     result = dict(method=c['variant'], clean_macro_f1=f1_score(y[known & (d['technical'] == 0)], p[known & (d['technical'] == 0)].argmax(1), average='macro', zero_division=0),
-                  semantic_auroc=roc_auc_score(y[readable] < 0, d['novelty'][readable]),
+                  semantic_auroc=roc_auc_score(y[readable] < 0, d['novelty'][readable]) if len(np.unique(y[readable]<0))==2 else np.nan,
                   accepted_error=float((~correct[accepted & (y >= 0)]).mean()) if (accepted & (y >= 0)).any() else np.nan,
                   accepted_unknown_rate=float(accepted[y < 0].mean()) if (y < 0).any() else np.nan,
-                  readable_known_coverage=float(accepted[known].mean()), minimum_class_retention=float(min(retention)),
+                  readable_known_coverage=float(accepted[known].mean()), minimum_class_retention=float(min(retention)) if retention and len(retention)==len(eligible) else np.nan,
                   wrong_action_rate=float((actions != target_action).mean()), reacquisition_rate=float((actions == 1).mean()),
                   expert_review_rate=float((actions == 2).mean()))
     pd.DataFrame([result]).to_csv(out / 'metrics.csv', index=False)
     pd.crosstab(pd.Series(target_action, name='target'), pd.Series(actions, name='action')).to_csv(out / 'action_confusion.csv')
+    panel=[]
+    for technical in [0,1]:
+        for semantic in [0,1]:
+            selected=(d['technical']==technical)&((y<0)==semantic)
+            if not selected.any(): continue
+            panel.append(dict(technical=technical,unknown=semantic,records=int(selected.sum()),
+                classify=int(np.sum(actions[selected]==0)),reacquire=int(np.sum(actions[selected]==1)),
+                review=int(np.sum(actions[selected]==2)),wrong=int(np.sum(actions[selected]!=target_action[selected]))))
+    pd.DataFrame(panel).to_csv(out/'stratum_actions.csv',index=False)
+    pd.DataFrame([dict(label=k,readable_support=int(np.sum(known&(y==k))),
+        accepted=int(np.sum(known&(y==k)&accepted)),
+        retention=float(accepted[known&(y==k)].mean()) if np.any(known&(y==k)) else np.nan,
+        calibration_eligible=k in eligible) for k in range(c['classes'])]).to_csv(out/'class_retention.csv',index=False)
 
 
 def plot(out):
@@ -211,7 +267,8 @@ def main():
     c = json.loads(Path(args.config).read_text(encoding='utf-8'))
     if args.variant:
         c['variant'] = args.variant
-    if c['variant'] not in ['full', 'no-quality', 'no-retention', 'no-consistency', 'collapsed-actions']:
+    from .baselines import BASELINES
+    if c['variant'] not in ['full', 'no-quality', 'no-retention', 'no-consistency', 'collapsed-actions',*BASELINES]:
         p.error('Unknown variant')
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)

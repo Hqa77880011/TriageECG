@@ -21,7 +21,7 @@ def main():
     torch.set_num_threads(1)
     c = json.loads(Path("config.json").read_text())
     c.update(classes=2, width=8, epochs=1, batch_size=8, threshold_points=4,
-             coverage=.8, coverage_tolerance=.21, minimum_retention=.5)
+             coverage=.8, coverage_tolerance=.21, minimum_retention=.5,retention_min_support=1)
     rng = np.random.default_rng(c["seed"])
     roles = np.repeat(["train", "dev", "cal", "test"], [16, 16, 16, 16])
     labels = np.tile([0, 1, 0, 1, -1, -1, 0, 1], 8)
