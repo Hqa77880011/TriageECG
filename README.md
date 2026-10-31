@@ -73,7 +73,7 @@ Accepted error uses accepted known records, as in the manuscript objective; acce
 python -m qualitynovelty.validate --output runs/validation
 ```
 
-Seed 13, CPU thread 1: preparation, one training epoch, novelty fit, feasible constrained calibration, test inference, evaluation and routing plot passed. The joint gradient check loss was finite (1.4880903), classifier and technical gradients were finite, the classifier updated, and save/load maximum output difference was 0. A hand fixture verifies known-only accepted error 0 despite one accepted unknown, unknown acceptance 0.5, semantic AUROC 1, minimum retention 1 and wrong-action fraction 0.25. Fixtures are not paper-performance evidence.
+Seed 13, CPU thread 1: preparation, one training epoch, novelty fit, feasible constrained calibration, test inference, evaluation and routing plot passed. The joint gradient check loss was finite (1.3831513), classifier and technical gradients were finite, the classifier updated, and save/load maximum output difference was 0. A hand fixture verifies known-only accepted error 0 despite one accepted unknown, unknown acceptance 0.5, semantic AUROC 1, minimum retention 1 and wrong-action fraction 0.25. Fixtures are not paper-performance evidence.
 
 The compact residual width, diagonal class-distance conditioning and grid-search policy are explicit implementation choices. Technical augmentation now combines baseline drift, electrode-motion-like transients, white noise at a declared SNR and separately modeled missing leads. The waveform transformations do not imply a clinical readability label. The comparison utility aggregates actual metric files, without preset paper scores. Real clinical annotation and full paper-table reproduction have not been run.
 
