@@ -55,4 +55,24 @@ python -m qualitynovelty evaluate --config config.json --output runs/no_quality
 
 Keep `config.json` with the run; it contains model/data settings and the seed where the CLI does not expose one. Use separate output directories for different seeds/conditions.
 
-Source inspection: Python 3.13.5, numpy 2.1.3, scipy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, matplotlib 3.10.0, torch 2.7.1+cu118 (installed versions inspected). Checks covered Python syntax, configuration parsing and CLI arguments. No training or full evaluation was run. The GitHub Actions workflow checks source syntax and package installation plus undefined-name/import linting.
+CPU validation: Python 3.13.5, NumPy 2.1.3, SciPy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, Matplotlib 3.10.0 and PyTorch 2.7.1+cu118. The check below actually exercises all six CLI stages with synthetic patient-disjoint data.
+
+## Method and metric mapping
+
+| Paper component / endpoint | Entry | Command |
+| --- | --- | --- |
+| Residual temporal encoder, known and technical heads, mild-pair loss | `Triage`, `train` | `python -m qualitynovelty train` |
+| Source-dev energy/distance/quality novelty | `novelty_features`, `calibrate` | `python -m qualitynovelty calibrate` |
+| Coverage and class-retention constrained three-action policy | `route`, `calibrate` | `calibrate` / `run` |
+| Clean macro-F1, readable semantic AUROC, accepted-known error, retention and action rates | `evaluate` | `python -m qualitynovelty evaluate` |
+| Routing scores | `plot` | `python -m qualitynovelty plot` |
+
+Accepted error uses accepted known records, as in the manuscript objective; accepted unknowns have a separate `accepted_unknown_rate`. Readable-known coverage and per-class retention use readable known records; semantic AUROC uses readable known and unknown records. Class retention currently requires any calibration support; larger minimum-support eligibility must be frozen in the input protocol.
+
+```bash
+python -m qualitynovelty.validate --output runs/validation
+```
+
+Seed 13, CPU thread 1: preparation, one training epoch, novelty fit, feasible constrained calibration, test inference, evaluation and routing plot passed. The joint gradient check loss was finite (1.4880903), classifier and technical gradients were finite, the classifier updated, and save/load maximum output difference was 0. A hand fixture verifies known-only accepted error 0 despite one accepted unknown, unknown acceptance 0.5, semantic AUROC 1, minimum retention 1 and wrong-action fraction 0.25. Fixtures are not paper-performance evidence.
+
+The compact residual width, diagonal class-distance conditioning, Gaussian technical perturbation and grid-search policy are explicit implementation choices. This implementation does not include external SQI+SVM, temperature-scaled/deep-ensemble, OpenMax or SSL backbone baseline training. The comparison utility aggregates actual metric files, without preset paper scores. Real ECG mapping, clinical technical/readability annotation and paper-table reproduction have not been run.

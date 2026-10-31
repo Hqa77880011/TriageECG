@@ -142,7 +142,7 @@ def calibrate(c, out):
                 retention = [(action[readable_known & (labels == k)] == 0).mean() for k in range(c['classes']) if (readable_known & (labels == k)).any()]
                 if c['variant'] != 'no-retention' and min(retention) < c['minimum_retention']:
                     continue
-                accepted = action == 0
+                accepted = (action == 0) & (labels >= 0)
                 error = (p.argmax(1)[accepted] != labels[accepted]).mean() if accepted.any() else 1.
                 objective = error + c['reacquisition_cost'] * (action == 1).mean() + c['review_cost'] * (action == 2).mean()
                 if objective < best:
@@ -181,7 +181,8 @@ def evaluate(c, out):
     target_action = np.where(d['technical'] > 0, 1, np.where(y < 0, 2, 0))
     result = dict(method=c['variant'], clean_macro_f1=f1_score(y[known & (d['technical'] == 0)], p[known & (d['technical'] == 0)].argmax(1), average='macro', zero_division=0),
                   semantic_auroc=roc_auc_score(y[readable] < 0, d['novelty'][readable]),
-                  accepted_error=float((~correct[accepted]).mean()),
+                  accepted_error=float((~correct[accepted & (y >= 0)]).mean()) if (accepted & (y >= 0)).any() else np.nan,
+                  accepted_unknown_rate=float(accepted[y < 0].mean()) if (y < 0).any() else np.nan,
                   readable_known_coverage=float(accepted[known].mean()), minimum_class_retention=float(min(retention)),
                   wrong_action_rate=float((actions != target_action).mean()), reacquisition_rate=float((actions == 1).mean()),
                   expert_review_rate=float((actions == 2).mean()))
