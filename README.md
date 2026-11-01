@@ -1,6 +1,6 @@
 # TriageECG
 
-Implementation of **Separating signal corruption from semantic novelty for class-preserving ECG triage.**
+**Separating signal corruption from semantic novelty for class-preserving ECG triage.**
 
 ## Installation
 
@@ -16,7 +16,7 @@ In PowerShell, replace the activation line with `.venv\Scripts\Activate.ps1`.
 
 ## Data and preprocessing
 
-Use [PTB-XL](https://physionet.org/content/ptb-xl/1.0.3/) and the paper's arrhythmia sources after a declared common rhythm mapping. NPZ fields are `x: (N,leads,time)`, `y` with known classes `0..K-1` and semantic unknown `-1`, `patient`, `split`, `defect` and `readable`. Roles are `train,dev,cal,test`; entire patients stay in one role. Training contains known classes only. Development semantic outliers are source-held-out classes, never final-target unknowns. Technical-defect and readable labels describe separate annotation concepts.
+Use [PTB-XL](https://physionet.org/content/ptb-xl/1.0.3/) and selected arrhythmia sources after a declared common rhythm mapping. NPZ fields are `x: (N,leads,time)`, `y` with known classes `0..K-1` and semantic unknown `-1`, `patient`, `split`, `defect` and `readable`. Roles are `train,dev,cal,test`; entire patients stay in one role. Training contains known classes only. Development semantic outliers are source-held-out classes, never final-target unknowns. Technical-defect and readable labels describe separate annotation concepts.
 
 ```bash
 python -m qualitynovelty prepare --input data/ecg.npz --config config.json --output runs/default
@@ -55,11 +55,8 @@ python -m qualitynovelty evaluate --config config.json --output runs/no_quality
 
 Keep `config.json` with the run; it contains model/data settings and the seed where the CLI does not expose one. Use separate output directories for different seeds/conditions.
 
-CPU validation: Python 3.13.5, NumPy 2.1.3, SciPy 1.15.3, pandas 2.2.3, scikit-learn 1.6.1, Matplotlib 3.10.0 and PyTorch 2.7.1+cu118. The check below actually exercises all six CLI stages with synthetic patient-disjoint data.
-
-## Method and metric mapping
-
-| Paper component / endpoint | Entry | Command |
+## Components and metrics
+| Component / metric | Entry | Command |
 | --- | --- | --- |
 | Residual temporal encoder, known and technical heads, mild-pair loss | `Triage`, `train` | `python -m qualitynovelty train` |
 | Source-dev energy/distance/quality novelty | `novelty_features`, `calibrate` | `python -m qualitynovelty calibrate` |
@@ -67,15 +64,13 @@ CPU validation: Python 3.13.5, NumPy 2.1.3, SciPy 1.15.3, pandas 2.2.3, scikit-l
 | Clean macro-F1, readable semantic AUROC, accepted-known error, retention and action rates | `evaluate` | `python -m qualitynovelty evaluate` |
 | Routing scores | `plot` | `python -m qualitynovelty plot` |
 
-Accepted error uses accepted known records, as in the manuscript objective; accepted unknowns have a separate `accepted_unknown_rate`. Readable-known coverage and per-class retention use readable known records; semantic AUROC uses readable known and unknown records. Class eligibility is frozen from calibration support (`retention_min_support`, default 5), saved in the policy and used in evaluation. Missing test support leaves the full minimum-retention endpoint undefined; `class_retention.csv` exposes the individual supports.
+Accepted error uses accepted known records; accepted unknowns have a separate `accepted_unknown_rate`. Readable-known coverage and per-class retention use readable known records; semantic AUROC uses readable known and unknown records. Class eligibility is frozen from calibration support (`retention_min_support`, default 5), saved in the policy and used in evaluation. Missing test support leaves the full minimum-retention endpoint undefined; `class_retention.csv` exposes the individual supports.
 
 ```bash
 python -m qualitynovelty.validate --output runs/validation
 ```
 
-Seed 13, CPU thread 1: preparation, one training epoch, novelty fit, feasible constrained calibration, test inference, evaluation and routing plot passed. The joint gradient check loss was finite (1.3831513), classifier and technical gradients were finite, the classifier updated, and save/load maximum output difference was 0. A hand fixture verifies known-only accepted error 0 despite one accepted unknown, unknown acceptance 0.5, semantic AUROC 1, minimum retention 1 and wrong-action fraction 0.25. Fixtures are not paper-performance evidence.
-
-The compact residual width, diagonal class-distance conditioning and grid-search policy are explicit implementation choices. Technical augmentation now combines baseline drift, electrode-motion-like transients, white noise at a declared SNR and separately modeled missing leads. The waveform transformations do not imply a clinical readability label. The comparison utility aggregates actual metric files, without preset paper scores. Real clinical annotation and full paper-table reproduction have not been run.
+The encoder uses compact residual blocks, diagonal class-distance conditioning and grid-search action policy. Technical stress combines baseline drift, electrode-motion-like transients, white noise at declared SNR and missing leads. Readability remains an independent annotation.
 
 ## Native data and semantic protocol
 
@@ -109,7 +104,7 @@ Use the standard six stages with these additional `--variant` values:
 | `ssl` | Train-only two-view SimCLR NT-Xent pretraining with a nonlinear projection head, then supervised ResNet18 fine-tuning |
 | `unconstrained` | Independently trained residual two-score system with technical/conditioned novelty scoring and no class-retention constraint |
 
-Single-score neural controls route rejected records to review; SQI/cascade and the two-score controls also have defect evidence for reacquisition advice. Every policy uses the common calibration objective and coverage budget. Class-retention constraints are specific to the full method and its appropriate ablations. The source-development/SQI annotations are never drawn from external test unknowns. OpenMax uses SciPy maximum-likelihood Weibull tails rather than numerical LibMR compatibility, and requires at least two correctly classified source examples per class. The SimCLR ECG augmentation is conservative amplitude scaling plus small jitter; it is a task adaptation, not an external pretrained ECG checkpoint. These architecture/feature choices are explicit where the TriageECG paper does not fix them.
+Single-score neural controls send rejected records to review; SQI/cascade and two-score controls also use defect evidence for reacquisition. All policies share the calibration objective and coverage budget. OpenMax fits SciPy maximum-likelihood Weibull tails and requires two correctly classified source examples per class. SimCLR uses amplitude scaling and small jitter. Source-development/SQI annotations exclude external test unknowns.
 
 ```bash
 python -m qualitynovelty prepare --input data/ecg.npz --output runs/openmax --variant openmax
@@ -122,6 +117,4 @@ python -m qualitynovelty.protocol coverage --source runs/default --output runs/c
 python -m qualitynovelty.validate_protocol --output runs/protocol-check
 ```
 
-Stress loads the frozen source model, novelty fit and policy, changes only test waveforms/experimental defect indicators, and records measured SNR. Independent readable labels stay unchanged. Coverage panels reuse the trained model, refit the same source-development scorer and select each target budget on calibration records; infeasible points remain explicitly infeasible. `stratum_actions.csv` emits classify/reacquire/review counts and wrong-action counts for the four technical/semantic strata. No manuscript table values are injected into these outputs.
-
-The protocol fixture runs all nine actual comparison fits, five ensemble members, source-only novelty, explicit native SCP and challenge waveform conversion, positive temperature, real Weibull tails, checkpoint prediction equality, fixed-source SNR and coverage panels. All functional data are generated; no clinical performance is asserted.
+Stress loads the frozen source model, novelty fit and policy, changes only test waveforms/experimental defect indicators, and records measured SNR. Independent readable labels stay unchanged. Coverage panels reuse the trained model, refit the same source-development scorer and select each target budget on calibration records; infeasible points remain explicitly infeasible. `stratum_actions.csv` emits classify/reacquire/review counts and wrong-action counts for the four technical/semantic strata.
